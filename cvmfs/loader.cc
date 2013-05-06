@@ -26,8 +26,7 @@
 #include <stddef.h>
 
 #include <openssl/crypto.h>
-#include <fuse/fuse_lowlevel.h>
-#include <fuse/fuse_opt.h>
+#include "duplex_fuse.h"
 
 #include <cstdlib>
 #include <cstring>

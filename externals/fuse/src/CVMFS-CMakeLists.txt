@@ -1,0 +1,8 @@
+include ("${EXTERNALS_LIB_LOCATION}/CMake-Register_External_Lib.txt")
+
+set (FUSE_ARCHIVE "${FUSE_BUILTIN_LOCATION}/lib/.libs/libfuse.a")
+
+register_external_lib (fuse ${FUSE_BUILTIN_LOCATION} ${FUSE_ARCHIVE})
+
+set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I${FUSE_BUILTIN_LOCATION}/include -D_BUILT_IN_FUSE")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${FUSE_BUILTIN_LOCATION}/include -D_BUILT_IN_FUSE")

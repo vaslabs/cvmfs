@@ -12,6 +12,7 @@ set (CVMFS_LOADER_SOURCES
   options.h options.cc
   globals.h globals.cc
   loader_talk.h loader_talk.cc
+  duplex_fuse.h
   loader.h loader.cc
 )
 
@@ -55,6 +56,7 @@ set (CVMFS2_DEBUG_SOURCES
   glue_buffer.h glue_buffer.cc
   loader.h
   history.h history.cc
+  duplex_fuse.h
   cvmfs.h cvmfs.cc
 )
 
@@ -167,8 +169,13 @@ if (MACOSX)
   set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${FUSE4X_INCLUDE_DIR})
   set (FUSE_LIBRARIES ${FUSE4X_LIBRARIES}) # just abstract the difference here... they are compatible
 else (MACOSX)
-  find_package (FUSE REQUIRED)
-  set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${FUSE_INCLUDE_DIR})
+  if (FUSE_BUILTIN)
+    include (${FUSE_BUILTIN_LOCATION}/CVMFS-CMakeLists.txt)
+    set (FUSE_LIBRARIES "")
+  else (FUSE_BUILTIN)
+    find_package (FUSE REQUIRED)
+    set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${FUSE_INCLUDE_DIR})
+  endif (FUSE_BUILTIN)
 endif (MACOSX)
 
 if (LIBCURL_BUILTIN)
@@ -253,6 +260,12 @@ if (BUILD_CVMFS)
     add_dependencies (cvmfs_fuse libcares libcurl)
   endif (LIBCURL_BUILTIN)
 
+  if (FUSE_BUILTIN)
+    add_dependencies (cvmfs2 fuse)
+    add_dependencies (cvmfs_fuse_debug fuse)
+    add_dependencies (cvmfs_fuse fuse)
+  endif (FUSE_BUILTIN)
+
   if (SQLITE3_BUILTIN)
     add_dependencies (cvmfs_fuse_debug sqlite3)
     add_dependencies (cvmfs_fuse sqlite3)
@@ -285,9 +298,9 @@ if (BUILD_CVMFS)
   set_target_properties (cvmfs_fuse_debug PROPERTIES VERSION ${CernVM-FS_VERSION_STRING})
 
   # link the stuff (*_LIBRARIES are dynamic link libraries *_archive are static link libraries ... one of them will be empty for each dependency)
-  target_link_libraries (cvmfs2 ${CVMFS_LOADER_LIBS} ${OPENSSL_LIBRARIES} fuse ${RT_LIBRARY} pthread dl)
-  target_link_libraries (cvmfs_fuse_debug    ${CVMFS2_DEBUG_LIBS} ${SQLITE3_LIBRARY} ${CURL_LIBRARIES} ${ZLIB_LIBRARIES} ${LEVELDB_LIBRARIES} ${OPENSSL_LIBRARIES} ${FUSE_LIBRARIES} ${LIBFUSE_ARCHIVE} ${SQLITE3_ARCHIVE} ${LIBCURL_ARCHIVE} ${LEVELDB_ARCHIVE} ${CARES_ARCHIVE} ${ZLIB_ARCHIVE} ${RT_LIBRARY} pthread dl)
-  target_link_libraries (cvmfs_fuse      ${CVMFS2_LIBS} ${SQLITE3_LIBRARY} ${CURL_LIBRARIES} ${ZLIB_LIBRARIES} ${LEVELDB_LIBRARIES} ${OPENSSL_LIBRARIES} ${FUSE_LIBRARIES} ${LIBFUSE_ARCHIVE} ${SQLITE3_ARCHIVE} ${LIBCURL_ARCHIVE} ${LEVELDB_ARCHIVE} ${CARES_ARCHIVE} ${ZLIB_ARCHIVE} ${RT_LIBRARY} pthread dl)
+  target_link_libraries (cvmfs2 ${CVMFS_LOADER_LIBS} ${OPENSSL_LIBRARIES} ${FUSE_LIBRARIES} ${FUSE_ARCHIVE} ${RT_LIBRARY} pthread dl)
+  target_link_libraries (cvmfs_fuse_debug    ${CVMFS2_DEBUG_LIBS} ${SQLITE3_LIBRARY} ${CURL_LIBRARIES} ${ZLIB_LIBRARIES} ${LEVELDB_LIBRARIES} ${OPENSSL_LIBRARIES} ${FUSE_LIBRARIES} ${FUSE_ARCHIVE} ${SQLITE3_ARCHIVE} ${LIBCURL_ARCHIVE} ${LEVELDB_ARCHIVE} ${CARES_ARCHIVE} ${ZLIB_ARCHIVE} ${RT_LIBRARY} pthread dl)
+  target_link_libraries (cvmfs_fuse      ${CVMFS2_LIBS} ${SQLITE3_LIBRARY} ${CURL_LIBRARIES} ${ZLIB_LIBRARIES} ${LEVELDB_LIBRARIES} ${OPENSSL_LIBRARIES} ${FUSE_LIBRARIES} ${FUSE_ARCHIVE} ${SQLITE3_ARCHIVE} ${LIBCURL_ARCHIVE} ${LEVELDB_ARCHIVE} ${CARES_ARCHIVE} ${ZLIB_ARCHIVE} ${RT_LIBRARY} pthread dl)
   target_link_libraries (cvmfs_fsck    ${CVMFS_FSCK_LIBS} ${ZLIB_LIBRARIES} ${OPENSSL_LIBRARIES} ${ZLIB_ARCHIVE} pthread)
 
 endif (BUILD_CVMFS)

@@ -55,7 +55,7 @@
 #include <functional>
 #include <string>
 
-#include <fuse/fuse_lowlevel.h>
+#include "duplex_fuse.h"
 
 #include "platform.h"
 #include "murmur.h"

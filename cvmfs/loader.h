@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 #include <time.h>
-#include <fuse/fuse_lowlevel.h>
+#include "duplex_fuse.h"
 
 #include <cstring>
 #include <string>

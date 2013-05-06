@@ -2,6 +2,7 @@
 
 CARES_VERSION=1.9.1
 CURL_VERSION=7.27.0
+FUSE_VERSION=2.9.2
 ZLIB_VERSION=1.2.7
 SPARSEHASH_VERSION=1.12
 LEVELDB_VERSION=1.5.0
@@ -30,6 +31,15 @@ mkdir -p "$outOfSource/libcurl/src"
 mv curl-${CURL_VERSION}/* "$outOfSource/libcurl/src"
 cp src/* "$outOfSource/libcurl/src"
 rm -rf curl-${CURL_VERSION}
+cd ../..
+
+# FUSE
+cd externals/fuse
+tar xvfz fuse-${FUSE_VERSION}.tar.gz
+mkdir -p "$outOfSource/fuse/src"
+mv fuse-${FUSE_VERSION}/* "$outOfSource/fuse/src"
+cp src/* "$outOfSource/fuse/src"
+rm -rf fuse-${FUSE_VERSION}
 cd ../..
 
 # Zlib
