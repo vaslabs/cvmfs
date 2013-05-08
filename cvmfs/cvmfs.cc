@@ -45,8 +45,9 @@
 #include <inttypes.h>
 
 #include <openssl/crypto.h>
+#include <fuse/fuse_lowlevel.h>
+#include <fuse/fuse_opt.h>
 #include <google/dense_hash_map>
-#include "duplex_fuse.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -510,10 +511,6 @@ static void RemountCheck() {
 }
 
 
-static bool GetDirentForPath(const PathString &path,
-                             const fuse_ino_t parent_inode,
-                             catalog::DirectoryEntry *dirent);
-
 static bool GetDirentForInode(const fuse_ino_t ino,
                               catalog::DirectoryEntry *dirent)
 {
@@ -526,59 +523,29 @@ static bool GetDirentForInode(const fuse_ino_t ino,
     // NFS mode
     PathString path;
     if (nfs_maps::GetPath(ino, &path) &&
-        catalog_manager_->LookupPath(path, catalog::kLookupFull, dirent))
+        catalog_manager_->LookupPath(path, catalog::kLookupSole, dirent))
     {
       // Fix inodes
       dirent->set_inode(ino);
-      catalog::DirectoryEntry parent_dirent;
-      const PathString parent_path = GetParentPath(path);
-      if (md5path_cache_->Lookup(hash::Md5(parent_path.GetChars(),
-                                           parent_path.GetLength()),
-                                 &parent_dirent))
-      {
-        dirent->set_parent_inode(parent_dirent.inode());
-      } else {
-        dirent->set_parent_inode(nfs_maps::GetInode(parent_path));
-      }
-
       inode_cache_->Insert(ino, *dirent);
       return true;
     }
   } else {
     // Normal mode
-    if (catalog_manager_->LookupInode(ino, catalog::kLookupFull, dirent)) {
+    PathString path;
+    if (ino == catalog_manager_->GetRootInode()) {
+      catalog_manager_->LookupPath(PathString(), catalog::kLookupSole, dirent);
+      dirent->set_inode(ino);
       inode_cache_->Insert(ino, *dirent);
       return true;
     }
-
-    // Lookup failed.  It might be in the glue buffer or in the cwd buffer.
-    // Handling of ancient inodes from previous catalog revisions of after
-    // reloading of the cvmfs module.
-    // Inode should be translated into the new inode from the catalogs
-    if (inode_annotation_ && !inode_annotation_->ValidInode(ino)) {
-      LogCvmfs(kLogCvmfs, kLogDebug, "lookup for ancient inode %"PRIu64, ino);
-      PathString recovered_path;
-      bool found = inode_tracker_->Find(ino, &recovered_path);
-      if (!found) {
-        LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslog, "internal error: "
-                 "inode tracker lookup failure (%"PRIu64"), "
-                 "reconstructed path %s, catalog revision %u",
-                 ino, recovered_path.c_str(), catalog_manager_->GetRevision());
-      } else {
-        // Path reconstructed, is it in the new file system snapshot?
-        // TODO: use caches
-        bool retval = GetDirentForPath(recovered_path, 0, dirent);
-        if (retval) {
-          LogCvmfs (kLogCvmfs, kLogDebug, "translated inode %"PRIu64" to "
-                    "inode %"PRIu64, ino, dirent->inode());
-          // Only insert fresh and recoverable data into caches
-          // TODO: insert into md5 pathcache
-          dirent->set_inode(ino);
-          inode_cache_->Insert(ino, *dirent);
-          path_cache_->Insert(ino, recovered_path);
-          return true;
-        }
-      }
+    if (inode_tracker_->FindPath(ino, &path) &&
+        catalog_manager_->LookupPath(path, catalog::kLookupSole, dirent))
+    {
+      // Fix inodes
+      dirent->set_inode(ino);
+      inode_cache_->Insert(ino, *dirent);
+      return true;
     }
   }
 
@@ -589,32 +556,33 @@ static bool GetDirentForInode(const fuse_ino_t ino,
 
 
 static bool GetDirentForPath(const PathString &path,
-                             const fuse_ino_t parent_inode,
                              catalog::DirectoryEntry *dirent)
 {
+  uint64_t live_inode = 0;
+  if (!nfs_maps_)
+    live_inode = inode_tracker_->FindInode(path);
+
   hash::Md5 md5path(path.GetChars(), path.GetLength());
   if (md5path_cache_->Lookup(md5path, dirent)) {
     if (dirent->GetSpecial() == catalog::kDirentNegative)
       return false;
+    if (!nfs_maps_ && (live_inode != 0))
+      dirent->set_inode(live_inode);
     return true;
   }
 
   // Lookup inode in catalog TODO: not twice md5 calculation
   bool retval;
-  if ((parent_inode == 0) ||
-      (inode_annotation_ && !inode_annotation_->ValidInode(parent_inode)))
-  {
-    // The parent inode can be resolved just now, but we shouldn't put it in
-    // caches as it can be forgotten soon
-    retval = catalog_manager_->LookupPath(path, catalog::kLookupFull, dirent);
-  } else {
-    retval = catalog_manager_->LookupPath(path, catalog::kLookupSole, dirent);
-    dirent->set_parent_inode(parent_inode);
-  }
+  retval = catalog_manager_->LookupPath(path, catalog::kLookupSole, dirent);
   if (retval) {
     if (nfs_maps_) {
       // Fix inode
       dirent->set_inode(nfs_maps::GetInode(path));
+    } else {
+      // TODO: Ensure that regular files get a new inode on order to avoid
+      // page cache mixup
+      if (live_inode != 0)
+        dirent->set_inode(live_inode);
     }
     md5path_cache_->Insert(md5path, *dirent);
     return true;
@@ -641,57 +609,15 @@ static bool GetPathForInode(const fuse_ino_t ino, PathString *path) {
     return false;
   }
 
-  LogCvmfs(kLogCvmfs, kLogDebug, "MISS %d - recursively building path", ino);
+  if (ino == catalog_manager_->GetRootInode())
+    return true;
 
-  // Find out the parent path recursively and rebuild the absolute path
-  catalog::DirectoryEntry dirent;
-  if (!GetDirentForInode(ino, &dirent))
-    return false;
-
-  // Check if we reached the root node
-  if (dirent.name().IsEmpty()) {
-    path->Assign("", 0);
-  } else {
-    // Retrieve the parent path recursively
-    PathString parent_path;
-    if (!GetPathForInode(dirent.parent_inode(), &parent_path)) {
-      LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslog,
-               "GetPathForInode, failed at %s (%"PRIu64")",
-               dirent.name().c_str(), dirent.parent_inode());
-      return false;
-    }
-
-    path->Assign(parent_path);
-    path->Append("/", 1);
-    path->Append(dirent.name().GetChars(), dirent.name().GetLength());
-  }
-
-  path_cache_->Insert(dirent.inode(), *path);
+  LogCvmfs(kLogCvmfs, kLogDebug, "MISS %d - looking in inode tracker", ino);
+  bool retval = inode_tracker_->FindPath(ino, path);
+  assert(retval);
+  path_cache_->Insert(ino, *path);
   return true;
 }
-
-
-static inline void AddToInodeTracker(const catalog::DirectoryEntry &dirent) {
-  if (nfs_maps_)
-    return;
-
-  bool retval = inode_tracker_->VfsGet(dirent.inode(), dirent.parent_inode(),
-                                       dirent.name());
-  if (!retval) {
-    catalog::DirectoryEntry parent_dirent;
-    retval = GetDirentForInode(dirent.parent_inode(), &parent_dirent);
-    assert(retval);
-    AddToInodeTracker(parent_dirent);
-    bool new_inode =
-      inode_tracker_->VfsAdd(dirent.inode(), dirent.parent_inode(),
-                             dirent.name());
-    if (!new_inode) {
-      // inode has been already inserted by another thread, drop parent refcnt
-      inode_tracker_->VfsPut(dirent.parent_inode(), 1);
-    }
-  }
-}
-
 
 
 /**
@@ -728,10 +654,13 @@ static void cvmfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
           dirent.set_inode(1);
           goto reply_positive;
         }
-        if (GetDirentForInode(dirent.parent_inode(), &dirent))
+        if (GetPathForInode(parent, &parent_path) &&
+            GetDirentForPath(GetParentPath(parent_path), &dirent))
+        {
           goto reply_positive;
-        else
+        } else {
           goto reply_negative;
+        }
       }
     } else {
       goto reply_negative;
@@ -747,12 +676,12 @@ static void cvmfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
   path.Append("/", 1);
   path.Append(name, strlen(name));
   tracer::Trace(tracer::kFuseLookup, path, "lookup()");
-  if (!GetDirentForPath(path, parent, &dirent)) {
+  if (!GetDirentForPath(path, &dirent)) {
     goto reply_negative;
   }
 
  reply_positive:
-  AddToInodeTracker(dirent);
+  inode_tracker_->VfsGet(dirent.inode(), path);
   remount_fence_->Leave();
   result.ino = dirent.inode();
   result.attr = dirent.GetStatStructure();
@@ -910,7 +839,7 @@ static void cvmfs_opendir(fuse_req_t req, fuse_ino_t ino,
   // Add parent directory link
   catalog::DirectoryEntry p;
   if (d.inode() != catalog_manager_->GetRootInode() &&
-      GetDirentForInode(d.parent_inode(), &p))
+      GetDirentForPath(GetParentPath(path), &p))
   {
     info = p.GetStatStructure();
     AddToDirListing(req, "..", &info, &listing);
@@ -929,26 +858,22 @@ static void cvmfs_opendir(fuse_req_t req, fuse_ino_t ino,
   for (catalog::StatEntryList::const_iterator i = listing_from_catalog.begin(),
        iEnd = listing_from_catalog.end(); i != iEnd; ++i)
   {
-    if (nfs_maps_) {
-      // Fix inodes
-      PathString entry_path;
-      entry_path.Assign(path);
-      entry_path.Append("/", 1);
-      entry_path.Append(i->name.GetChars(), i->name.GetLength());
+    // Fix inodes
+    PathString entry_path;
+    entry_path.Assign(path);
+    entry_path.Append("/", 1);
+    entry_path.Append(i->name.GetChars(), i->name.GetLength());
 
-      catalog::DirectoryEntry entry_dirent;
-      if (!GetDirentForPath(entry_path, ino, &entry_dirent)) {
-        LogCvmfs(kLogCvmfs, kLogDebug, "listing entry %s vanished, skipping",
-                 entry_path.c_str());
-        continue;
-      }
-
-      struct stat fixed_info = i->info;
-      fixed_info.st_ino = entry_dirent.inode();
-      AddToDirListing(req, i->name.c_str(), &fixed_info, &listing);
-    } else {
-      AddToDirListing(req, i->name.c_str(), &(i->info), &listing);
+    catalog::DirectoryEntry entry_dirent;
+    if (!GetDirentForPath(entry_path, &entry_dirent)) {
+      LogCvmfs(kLogCvmfs, kLogDebug, "listing entry %s vanished, skipping",
+               entry_path.c_str());
+      continue;
     }
+
+    struct stat fixed_info = i->info;
+    fixed_info.st_ino = entry_dirent.inode();
+    AddToDirListing(req, i->name.c_str(), &fixed_info, &listing);
   }
 
   // Save the directory listing and return a handle to the listing
@@ -1133,15 +1058,16 @@ static void cvmfs_open(fuse_req_t req, fuse_ino_t ino,
         (static_cast<int>(max_open_files_))-kNumReservedFd) {
       LogCvmfs(kLogCvmfs, kLogDebug, "file %s opened (fd %d)",
                path.c_str(), fd);
-      fi->keep_cache = kcache_timeout_ == 0.0 ? 0 : 1;
-      if (dirent.cached_mtime() != dirent.mtime()) {
+      //fi->keep_cache = kcache_timeout_ == 0.0 ? 0 : 1;
+      /*if (dirent.cached_mtime() != dirent.mtime()) {
         LogCvmfs(kLogCvmfs, kLogDebug,
                  "file might be new or changed, invalidating cache (%d %d "
                  "%"PRIu64")", dirent.mtime(), dirent.cached_mtime(), ino);
         fi->keep_cache = 0;
         dirent.set_cached_mtime(dirent.mtime());
         inode_cache_->Insert(ino, dirent);
-      }
+      }*/
+      fi->keep_cache = 0;
       fi->fh = fd;
       fuse_reply_open(req, fi);
       return;
@@ -1545,7 +1471,7 @@ static void cvmfs_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
 bool Evict(const string &path) {
   catalog::DirectoryEntry dirent;
   remount_fence_->Enter();
-  const bool found = GetDirentForPath(PathString(path), 0, &dirent);
+  const bool found = GetDirentForPath(PathString(path), &dirent);
   remount_fence_->Leave();
 
   if (!found && dirent.IsRegular())
