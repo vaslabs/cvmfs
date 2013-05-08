@@ -26,7 +26,6 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: gcc
 BuildRequires: gcc-c++
 BuildRequires: cmake
-BuildRequires: fuse-devel
 BuildRequires: pkgconfig
 BuildRequires: openssl-devel
 BuildRequires: libattr-devel
@@ -48,12 +47,10 @@ Requires: zlib
 Requires: gdb
 # Account for different package names
 %if 0%{?suse_version}
-Requires: libfuse2
 Requires: glibc
 Requires: util-linux
 Requires: pwdutils
 %else
-Requires: fuse-libs
 Requires: glibc-common
 Requires: which
 Requires: shadow-utils
