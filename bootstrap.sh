@@ -6,6 +6,7 @@ ZLIB_VERSION=1.2.7
 SPARSEHASH_VERSION=1.12
 LEVELDB_VERSION=1.5.0
 GOOGLETEST_VERSION=1.6.0
+JEMALLOC_VERSION=3.3.1
 
 # put the extracted stuff out of source for compilation (location given by cmake)
 outOfSource=$1
@@ -42,6 +43,15 @@ mkdir -p "$outOfSource/zlib/src"
 mv zlib-${ZLIB_VERSION}/* "$outOfSource/zlib/src"
 cp src/* "$outOfSource/zlib/src"
 rm -rf zlib-${ZLIB_VERSION}
+cd $repo_root
+
+# jemalloc
+cd externals/jemalloc
+tar xvfj jemalloc-${JEMALLOC_VERSION}.tar.bz2
+mkdir -p "$outOfSource/jemalloc/src"
+mv jemalloc-${JEMALLOC_VERSION}/* "$outOfSource/jemalloc/src"
+cp src/* "$outOfSource/jemalloc/src"
+rm -rf jemalloc-${JEMALLOC_VERSION}
 cd $repo_root
 
 # sqlite3
